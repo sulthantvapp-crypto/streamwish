@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: universal-stream-api
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: PROXY
+        value: http://zmglmvwl:puz74ldkgj3f@31.59.20.176:6754
+      - key: DB_URL
+        value: https://raw.githubusercontent.com/ytbro8326-sudo/primesrc_single_flaresolver/refs/heads/main/custom_merged_data.json?token=GHSAT0AAAAAAEC6VY7K65RBF6X7GCMHKWBY2UQAW3A
+      - key: DB_REFRESH_SECS
+        value: 3600
+      - key: GITHUB_TOKEN
+        sync: false
