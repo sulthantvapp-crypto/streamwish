@@ -481,11 +481,9 @@ def _video_id(s: str) -> str:
 def extract_voe(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
     """0. VOE.sx Extractor via https://voe-sx-movies-play.ytbro8326.workers.dev."""
     clean = str(url_or_id).strip()
-    canonical_url = clean if "://" in clean else f"https://voe.sx/e/{clean}"
-    vid = _video_id(canonical_url)
     
-    # Query the dedicated VOE worker API
-    worker_api = f"{VOE_WORKER_BASE.rstrip('/')}/api/{canonical_url}"
+    # Query the dedicated VOE worker API directly with TMDB ID, IMDB ID, or VOE URL
+    worker_api = f"{VOE_WORKER_BASE.rstrip('/')}/api/{clean}"
     try:
         r = requests.get(worker_api, timeout=(10, 20))
         if r.status_code == 200:
@@ -493,22 +491,24 @@ def extract_voe(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
             if data.get("success"):
                 stream_url = data.get("proxied_stream_url") or data.get("stream_url")
                 raw_stream_url = data.get("stream_url") or stream_url
+                vid = _video_id(clean)
                 return {
                     "status": "success",
                     "provider": "voe",
                     "type": "hls",
                     "video_id": vid,
-                    "player_url": canonical_url,
+                    "player_url": data.get("host_used") or f"{VOE_WORKER_BASE.rstrip('/')}/{clean}",
                     "title": data.get("title") or "VOE Stream",
+                    "tmdb_imdb": data.get("tmdb_imdb"),
                     "raw_stream_url": raw_stream_url,
                     "stream_url": stream_url,
                     "proxy": proxy,
                     "proxy_used": "voe-worker",
                 }
     except Exception as e:
-        logger.warning(f"VOE worker extraction error: {e}")
+        logger.warning(f"VOE worker extraction error for {clean}: {e}")
 
-    raise RuntimeError(f"VOE extraction failed for {canonical_url}")
+    raise RuntimeError(f"VOE extraction failed for {clean}")
 
 
 def extract_dood(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
@@ -1198,7 +1198,19 @@ def db_search():
 
 @app.route("/api/<int:tmdb_id>")
 def api_tmdb(tmdb_id: int):
-    """GET /api/<tmdb_id> - auto-plays in Luluvdoo style player (VOE plays first if available)."""
+    """GET /api/<tmdb_id> - checks VOE worker server first; if playing, plays immediately, else shifts to DB/other hosts."""
+    # 1. First check VOE server directly for this TMDB ID
+    if not request.args.get("host_url"):
+        try:
+            logger.info(f"Checking VOE server first for TMDB ID {tmdb_id}")
+            voe_res = extract_voe(str(tmdb_id))
+            voe_res["id_type"] = "tmdb"
+            voe_res["id_value"] = tmdb_id
+            return _player_response(voe_res) if _wants_html(request) else jsonify(voe_res)
+        except Exception as e:
+            logger.info(f"VOE worker not found or failed for TMDB {tmdb_id}: {e}. Auto-shifting to other hosts.")
+
+    # 2. Shift to database lookup and other multi-host providers
     entry = lookup_by_tmdb(str(tmdb_id))
     if not entry:
         return jsonify({"error": f"TMDB ID '{tmdb_id}' not found in database"}), 404
@@ -1224,7 +1236,18 @@ def api_query_handler(query_id: str):
     if cleaned.startswith("http:/") or cleaned.startswith("https:/") or any(alias in cleaned for alias in (VOE_ALIASES | DOOD_ALIASES | MIXDROP_ALIASES | LULUVDOO_ALIASES | BYSE_ALIASES | STREAMWISH_ALIASES | STREAMTA_ALIASES)):
         return api_direct(cleaned)
 
-    # 2. Database lookup (IMDb tt... or serial or TMDB)
+    # 2. Check VOE server first if it's a numeric ID (TMDB/Serial) or IMDb ID (tt...)
+    if not request.args.get("host_url") and (cleaned.isdigit() or cleaned.lower().startswith("tt")):
+        try:
+            logger.info(f"Checking VOE server first for query ID {cleaned}")
+            voe_res = extract_voe(cleaned)
+            voe_res["id_type"] = "imdb" if cleaned.lower().startswith("tt") else "tmdb"
+            voe_res["id_value"] = cleaned
+            return _player_response(voe_res) if _wants_html(request) else jsonify(voe_res)
+        except Exception as e:
+            logger.info(f"VOE worker check failed for {cleaned}: {e}. Auto-shifting to other hosts.")
+
+    # 3. Database lookup (IMDb tt... or serial or TMDB)
     entry = lookup_any(cleaned)
     if entry:
         try:
@@ -1235,7 +1258,7 @@ def api_query_handler(query_id: str):
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # 3. Direct video ID
+    # 4. Direct video ID
     return api_direct(cleaned)
 
 
