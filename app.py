@@ -241,9 +241,21 @@ def _make_dood_play(token: str) -> str:
     return f"{rnd}?token={token}&expiry={int(time.time() * 1000)}"
 
 
-# ---------------------------------------------------------------------------
-# Database Helpers
-# ---------------------------------------------------------------------------
+CACHE_DB_FILE = os.getenv("CACHE_DB_FILE", "database_cache.json")
+LOCAL_DB_FILES = ["database.json", "custom_merged_data.json", CACHE_DB_FILE]
+
+
+def _save_local_cache(data: list):
+    """Save database to local persistent storage for fast reload across restarts."""
+    if not data:
+        return
+    try:
+        with open(CACHE_DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        logger.info(f"Database successfully saved to local persistent cache '{CACHE_DB_FILE}' ({len(data)} entries)")
+    except Exception as e:
+        logger.warning(f"Could not write local DB cache '{CACHE_DB_FILE}': {e}")
+
 
 def _fetch_db() -> list:
     token = (os.getenv("GITHUB_TOKEN") or "").strip() or GITHUB_TOKEN
@@ -264,6 +276,7 @@ def _fetch_db() -> list:
             if r.status_code == 200:
                 data = r.json()
                 logger.info(f"DB loaded successfully: {len(data)} entries (via {url})")
+                _save_local_cache(data)
                 return data
         except Exception as err:
             logger.debug(f"Direct DB fetch {url} failed: {err}")
@@ -280,17 +293,18 @@ def _fetch_db() -> list:
                     if r.status_code == 200:
                         data = r.json()
                         logger.info(f"DB loaded with token: {len(data)} entries (via {url})")
+                        _save_local_cache(data)
                         return data
                 except Exception as err:
                     logger.debug(f"Auth DB fetch failed: {err}")
 
-    # Fallback to local bundled database.json
-    for local_file in ["database.json", "custom_merged_data.json"]:
+    # Fallback to local persistent storage files
+    for local_file in LOCAL_DB_FILES:
         if os.path.exists(local_file):
             try:
                 with open(local_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    logger.info(f"DB loaded successfully from local '{local_file}': {len(data)} entries")
+                    logger.info(f"DB loaded successfully from local storage '{local_file}': {len(data)} entries")
                     return data
             except Exception as e:
                 logger.warning(f"Failed to read local DB '{local_file}': {e}")
@@ -1164,6 +1178,33 @@ LULUVDOO_PLAYER_HTML = """<!DOCTYPE html>
       if (e.code === "KeyM") video.muted = !video.muted;
     }}
   }});
+
+  // Long-term browser IndexedDB caching for movie database & playback metadata
+  (function initClientStorage() {{
+    try {{
+      const req = indexedDB.open("UniversalStreamDB", 1);
+      req.onupgradeneeded = (e) => {{
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains("movies")) {{
+          db.createObjectStore("movies", {{ keyPath: "id" }});
+        }}
+      }};
+      req.onsuccess = (e) => {{
+        const db = e.target.result;
+        const tx = db.transaction("movies", "readwrite");
+        const store = tx.objectStore("movies");
+        store.put({{
+          id: window.location.pathname,
+          title: "{title}",
+          stream_url: streamUrl,
+          provider: "{provider_label}",
+          saved_at: Date.now()
+        }});
+      }};
+    }} catch(err) {{
+      console.warn("Client IndexedDB caching error:", err);
+    }}
+  }})();
 </script>
 </body>
 </html>"""
