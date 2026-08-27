@@ -1,14 +1,13 @@
 """
 Universal Stream Player & Multi-Host API Server
 
-Unified extraction, proxying, and auto-play player supporting:
-- MixDrop (MP4)
-- Streamta / Streamtape (MP4)
-- StreamWish / Playnixes (HLS / M3U8)
-- Luluvdoo / Lulustream (HLS / M3U8)
-- Bysejikuar / Bikebyse (AES-GCM HLS)
-- Playmogo / DoodStream (MP4)
-- Generic Direct Streams (MP4 / M3U8)
+Exact Luluvdoo Fluid Player UI & Priority Stream Pipeline:
+1. DoodStream / Playmogo
+2. MixDrop
+3. Luluvdoo / Lulustream
+4. Bysejikuar / Bikebyse
+5. StreamWish / Playnixes
+6. Streamta / Streamtape
 """
 
 from __future__ import annotations
@@ -61,23 +60,30 @@ DB_URL = os.getenv(
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 DB_REFRESH_SECS = int(os.getenv("DB_REFRESH_SECS", "3600"))
 
-# Provider Aliases
+# Provider Priority Order
+# 1. dood -> 2. mixdrop -> 3. luluvdo -> 4. bysejikuarcom -> 5. streamwish -> 6. streamta
+PROVIDER_PRIORITY = {
+    "doodstream": 1,
+    "mixdrop": 2,
+    "luluvdoo": 3,
+    "bysejikuar": 4,
+    "streamwish": 5,
+    "streamtape": 6,
+    "unknown": 99,
+}
+
+DOOD_ALIASES = {
+    "dood.watch", "dood.so", "dood.li", "doods.pro",
+    "vidply.com", "ds2play.com", "ds2video.com", "d-s.io",
+    "d000d.com", "d0000d.com", "dood.ws", "dood.pm",
+    "dood.re", "dood.to", "playmogo.com",
+}
+
 MIXDROP_ALIASES = {
     "mixdrop.ag", "mixdrop.co", "mixdrop.to", "mixdrop.sx", "mixdrop.bz",
     "mixdrop.ch", "mixdrop.is", "mixdrop.vc", "mixdrop.club", "mixdrop.si",
     "miiixdrop.net", "mixdrop.nu", "mixdrop.vip", "mixdrop.ps", "mixdrop.cat",
     "mixdrop.click", "mixdrop.space", "miixdrop.top",
-}
-
-STREAMTA_ALIASES = {
-    "streamta.site", "streamtape.com", "streamtape.net", "streamtape.to",
-    "streamta.to", "streamta.com", "streamtape.xyz", "streamta.co",
-}
-
-STREAMWISH_ALIASES = {
-    "streamwish.to", "streamwish.com", "playnixes.com", "swishsrv.com",
-    "flaswish.com", "streamwish.site", "streamwish.xyz", "wishembed.pro",
-    "embedwish.com", "awish.pro", "streamwish.org", "filelions.to",
 }
 
 LULUVDOO_ALIASES = {
@@ -89,11 +95,15 @@ BYSE_ALIASES = {
     "bysejikuar.com", "bikebyse.com", "byse.com", "bysejikuar",
 }
 
-DOOD_ALIASES = {
-    "dood.watch", "dood.so", "dood.li", "doods.pro",
-    "vidply.com", "ds2play.com", "ds2video.com", "d-s.io",
-    "d000d.com", "d0000d.com", "dood.ws", "dood.pm",
-    "dood.re", "dood.to", "playmogo.com",
+STREAMWISH_ALIASES = {
+    "streamwish.to", "streamwish.com", "playnixes.com", "swishsrv.com",
+    "flaswish.com", "streamwish.site", "streamwish.xyz", "wishembed.pro",
+    "embedwish.com", "awish.pro", "streamwish.org", "filelions.to",
+}
+
+STREAMTA_ALIASES = {
+    "streamta.site", "streamtape.com", "streamtape.net", "streamtape.to",
+    "streamta.to", "streamta.com", "streamtape.xyz", "streamta.co",
 }
 
 UA = (
@@ -120,13 +130,12 @@ _db_fetched_at: float = 0.0
 stream_cache: dict = {}
 
 # ---------------------------------------------------------------------------
-# JS Unpackers & Encryption Helpers
+# JS Unpackers & Decryptors
 # ---------------------------------------------------------------------------
 
 def unpack(p, a=None, c=None, k=None, e=None, d=None):
-    """Deanpacker for packed JavaScript functions."""
+    """Deobfuscator for packed JavaScript functions."""
     if a is None and c is None and k is None:
-        # Auto-extract parameters from string
         pattern = r"\}\('(.*)',\s*(\d+),\s*(\d+),\s*'(.*)'\.split\('\|'\)"
         m = re.search(pattern, p, re.DOTALL)
         if not m:
@@ -218,13 +227,13 @@ def extract_signed_get_video_candidates(html: str) -> list[str]:
 
 
 def _make_dood_play(token: str) -> str:
-    """Generate Doodstream / Playmogo stream token path."""
+    """Generate Doodstream stream token path."""
     rnd = "".join(random.choice(string.ascii_letters + string.digits) for _ in range(10))
     return f"{rnd}?token={token}&expiry={int(time.time() * 1000)}"
 
 
 # ---------------------------------------------------------------------------
-# DB Helpers
+# Database Helpers
 # ---------------------------------------------------------------------------
 
 def _fetch_db() -> list:
@@ -237,7 +246,6 @@ def _fetch_db() -> list:
     ]
 
     for url in urls_to_try:
-        # 1. Direct fetch
         try:
             headers = {
                 "Accept": "application/vnd.github.v3.raw, application/json, text/plain, */*",
@@ -246,12 +254,11 @@ def _fetch_db() -> list:
             r = requests.get(url, headers=headers, timeout=10)
             if r.status_code == 200:
                 data = r.json()
-                logger.info(f"DB loaded successfully from remote GitHub: {len(data)} entries (via {url})")
+                logger.info(f"DB loaded successfully: {len(data)} entries (via {url})")
                 return data
         except Exception as err:
             logger.debug(f"Direct DB fetch {url} failed: {err}")
 
-        # 2. Authenticated fetch if token present
         if token:
             for auth_prefix in ["Bearer", "token"]:
                 try:
@@ -266,7 +273,7 @@ def _fetch_db() -> list:
                         logger.info(f"DB loaded with token: {len(data)} entries (via {url})")
                         return data
                 except Exception as err:
-                    logger.debug(f"Auth DB fetch {url} ({auth_prefix}) failed: {err}")
+                    logger.debug(f"Auth DB fetch failed: {err}")
 
     # Fallback to local bundled database.json
     for local_file in ["database.json", "custom_merged_data.json"]:
@@ -274,12 +281,12 @@ def _fetch_db() -> list:
             try:
                 with open(local_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    logger.info(f"DB loaded successfully from local file '{local_file}': {len(data)} entries")
+                    logger.info(f"DB loaded successfully from local '{local_file}': {len(data)} entries")
                     return data
             except Exception as e:
                 logger.warning(f"Failed to read local DB '{local_file}': {e}")
 
-    logger.error("DB fetch failed: unable to fetch from remote repo and no local fallback found")
+    logger.error("DB fetch failed: unable to fetch from remote or local fallback")
     return []
 
 
@@ -316,30 +323,25 @@ def lookup_by_imdb(imdb_id: str) -> Optional[dict]:
 
 
 def lookup_any(query_id: str) -> Optional[dict]:
-    """Matches by TMDB ID, IMDB ID, serial, or entry title."""
     q = str(query_id).strip()
     if not q:
         return None
 
-    # Check TMDB exact match
     entry = lookup_by_tmdb(q)
     if entry:
         return entry
 
-    # Check IMDB
     if q.lower().startswith("tt") or (q.isdigit() and len(q) >= 7):
         entry = lookup_by_imdb(q)
         if entry:
             return entry
 
-    # Check serial
     if q.isdigit():
         q_int = int(q)
         for e in get_db():
             if e.get("serial") == q_int:
                 return e
 
-    # Check title substring
     q_low = q.lower()
     for e in get_db():
         t = str(e.get("title") or "").lower()
@@ -350,7 +352,6 @@ def lookup_any(query_id: str) -> Optional[dict]:
 
 
 def search_db(query: str, limit: int = 20) -> list[dict]:
-    """Search DB by title, TMDB ID, or IMDb ID."""
     q = query.strip().lower()
     if not q:
         return []
@@ -371,15 +372,12 @@ def search_db(query: str, limit: int = 20) -> list[dict]:
 
 
 def _extract_all_host_urls(entry: dict) -> list[dict]:
-    """Extract and categorize all host URLs from a database entry."""
-    def host_key_sort(k: str) -> int:
-        m = re.search(r"host-(\d+)", k)
-        return int(m.group(1)) if m else 9999
+    """Extract and sort host URLs according to user-specified priority order."""
+    def host_priority_sort(h: dict) -> int:
+        provider = h["provider"]
+        return PROVIDER_PRIORITY.get(provider, 99)
 
-    host_keys = sorted(
-        [k for k, v in entry.items() if k.startswith("host") and isinstance(v, str) and v.startswith("http")],
-        key=host_key_sort
-    )
+    host_keys = [k for k, v in entry.items() if k.startswith("host") and isinstance(v, str) and v.startswith("http")]
     
     hosts = []
     for k in host_keys:
@@ -391,34 +389,33 @@ def _extract_all_host_urls(entry: dict) -> list[dict]:
             "provider": provider,
             "type": get_provider_type(provider),
         })
-    return hosts
+
+    # Sort strictly by priority: 1. dood -> 2. mixdrop -> 3. luluvdo -> 4. bysejikuar -> 5. streamwish -> 6. streamta
+    return sorted(hosts, key=host_priority_sort)
 
 
 # ---------------------------------------------------------------------------
-# Provider Detection & Session Building
+# Provider Detection & Networking
 # ---------------------------------------------------------------------------
 
 def detect_provider(url: str) -> str:
-    """Detect streaming provider name from URL."""
     try:
         netloc = urlparse(url).netloc.lower().replace("www.", "")
     except Exception:
         return "unknown"
 
+    if any(alias in netloc for alias in DOOD_ALIASES):
+        return "doodstream"
     if any(alias in netloc for alias in MIXDROP_ALIASES):
         return "mixdrop"
-    if any(alias in netloc for alias in STREAMTA_ALIASES):
-        return "streamtape"
-    if any(alias in netloc for alias in STREAMWISH_ALIASES):
-        return "streamwish"
     if any(alias in netloc for alias in LULUVDOO_ALIASES):
         return "luluvdoo"
     if any(alias in netloc for alias in BYSE_ALIASES):
         return "bysejikuar"
-    if any(alias in netloc for alias in DOOD_ALIASES):
-        return "doodstream"
-    if "voe" in netloc:
-        return "voe"
+    if any(alias in netloc for alias in STREAMWISH_ALIASES):
+        return "streamwish"
+    if any(alias in netloc for alias in STREAMTA_ALIASES):
+        return "streamtape"
     if url.endswith(".m3u8") or ".m3u8?" in url:
         return "hls_direct"
     if url.endswith(".mp4") or ".mp4?" in url:
@@ -427,8 +424,7 @@ def detect_provider(url: str) -> str:
 
 
 def get_provider_type(provider: str) -> str:
-    """Returns 'hls' or 'mp4'."""
-    if provider in ("streamwish", "luluvdoo", "bysejikuar", "voe", "hls_direct"):
+    if provider in ("streamwish", "luluvdoo", "bysejikuar", "hls_direct"):
         return "hls"
     return "mp4"
 
@@ -468,11 +464,59 @@ def _video_id(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Specific Extractors
+# Individual Extractors
 # ---------------------------------------------------------------------------
 
+def extract_dood(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
+    """1. DoodStream / Playmogo Extractor."""
+    vid = _video_id(url_or_id)
+    canonical = "playmogo.com"
+    player_url = f"https://{canonical}/e/{vid}"
+    last_err = None
+
+    for engine in ["requests", "cloudscraper"]:
+        if engine == "cloudscraper" and cloudscraper is None:
+            continue
+        session = _build_session(engine=engine, proxy_url=proxy)
+        try:
+            r = session.get(player_url, timeout=(8, 15), allow_redirects=True)
+            if r.status_code != 200 or "/pass_md5/" not in r.text:
+                continue
+            html = r.text
+            parsed = urlparse(r.url)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            m = re.search(r"\$\.get\(['\"](/pass_md5/[^'\"]+)['\"]", html)
+            if not m:
+                continue
+            pass_md5_path = m.group(1)
+            token = pass_md5_path.rstrip("/").rsplit("/", 1)[-1]
+            r2 = session.get(
+                base + pass_md5_path,
+                headers={"Referer": str(r.url), "X-Requested-With": "XMLHttpRequest"},
+                timeout=(8, 15),
+            )
+            if r2.status_code == 200 and r2.text.strip().startswith("http"):
+                raw_stream_url = r2.text.strip() + _make_dood_play(token)
+                return {
+                    "status": "success",
+                    "provider": "doodstream",
+                    "type": "mp4",
+                    "video_id": vid,
+                    "player_url": player_url,
+                    "title": "DoodStream Video",
+                    "raw_stream_url": raw_stream_url,
+                    "stream_url": f"/stream/{vid}",
+                    "proxy": proxy,
+                    "proxy_used": _mask_proxy(proxy),
+                }
+        except Exception as err:
+            last_err = err
+
+    raise RuntimeError(f"DoodStream extraction failed: {last_err}")
+
+
 def extract_mixdrop(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Extract MixDrop MP4 stream URL."""
+    """2. MixDrop Extractor."""
     vid = _video_id(url_or_id)
     mirrors = ["miixdrop.top", "mixdrop.ag", "mixdrop.to", "mixdrop.sx", "mixdrop.bz"]
     last_err = None
@@ -528,8 +572,157 @@ def extract_mixdrop(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
     raise RuntimeError(f"MixDrop extraction failed: {last_err}")
 
 
+def extract_luluvdoo(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
+    """3. Luluvdoo / Lulustream Extractor."""
+    vid = _video_id(url_or_id)
+    canonical = "luluvdoo.com"
+    player_url = f"https://{canonical}/e/{vid}"
+    last_err = None
+
+    for engine in ["requests", "cloudscraper"]:
+        if engine == "cloudscraper" and cloudscraper is None:
+            continue
+        session = _build_session(engine=engine, proxy_url=proxy)
+        try:
+            resp = session.get(player_url, headers={"Referer": f"https://{canonical}/"}, timeout=(8, 15))
+            if resp.status_code != 200:
+                continue
+            html = resp.text
+            if "File is no longer available" in html or "file was deleted" in html.lower():
+                raise RuntimeError("File was deleted on Luluvdoo")
+
+            title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
+            title = title_m.group(1).strip() if title_m else "Luluvdoo Video"
+
+            packed_match = re.search(r"(eval\(function\(p,a,c,k,e,d\)\{.*?\.split\('\|'\)[^)]*\)\))", html, re.DOTALL)
+            if not packed_match:
+                continue
+            decoded = unpack(packed_match.group(1))
+
+            streams = dict(re.findall(r'"(hls[234])"\s*:\s*"([^"]+)"', decoded))
+            extra = re.findall(r'https?://[^\s"\']+\.(?:m3u8|txt|mp4)\??[^\s"\']*', decoded)
+            for u in extra:
+                if u not in streams.values():
+                    key = "hls2" if ".m3u8" in u else ("hls3" if ".txt" in u else "hls4")
+                    streams.setdefault(key, u)
+
+            selected_stream = streams.get("hls2") or streams.get("hls3") or streams.get("hls4") or (list(streams.values())[0] if streams else None)
+            if selected_stream:
+                return {
+                    "status": "success",
+                    "provider": "luluvdoo",
+                    "type": "hls",
+                    "video_id": vid,
+                    "player_url": player_url,
+                    "title": title,
+                    "raw_stream_url": selected_stream,
+                    "stream_url": f"/stream/{vid}.m3u8",
+                    "proxy": proxy,
+                    "proxy_used": _mask_proxy(proxy),
+                }
+        except Exception as err:
+            last_err = err
+
+    raise RuntimeError(f"Luluvdoo extraction failed: {last_err}")
+
+
+def extract_bysejikuar(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
+    """4. Bysejikuar / Bikebyse Extractor (AES-GCM Decryption)."""
+    vid = _video_id(url_or_id)
+    canonical = "bysejikuar.com"
+    api_url = f"https://{canonical}/api/videos/{vid}"
+    player_url = f"https://{canonical}/e/{vid}"
+    last_err = None
+
+    for engine in ["requests", "cloudscraper"]:
+        if engine == "cloudscraper" and cloudscraper is None:
+            continue
+        session = _build_session(engine=engine, proxy_url=proxy)
+        try:
+            resp = session.get(api_url, headers={"Referer": player_url, "Origin": f"https://{canonical}"}, timeout=(8, 15))
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            playback = data.get("playback", {})
+            sources_data = decrypt_playback(playback)
+            sources = sources_data.get("sources", [])
+            master_m3u8 = sources[0]["url"] if sources else None
+            if master_m3u8:
+                return {
+                    "status": "success",
+                    "provider": "bysejikuar",
+                    "type": "hls",
+                    "video_id": vid,
+                    "player_url": player_url,
+                    "title": data.get("title") or "Bysejikuar Video",
+                    "poster_url": data.get("poster_url") or sources_data.get("poster_url"),
+                    "raw_stream_url": master_m3u8,
+                    "stream_url": f"/proxy?url={quote(master_m3u8)}",
+                    "proxy": proxy,
+                    "proxy_used": _mask_proxy(proxy),
+                }
+        except Exception as err:
+            last_err = err
+
+    raise RuntimeError(f"Bysejikuar extraction failed: {last_err}")
+
+
+def extract_streamwish(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
+    """5. StreamWish / Playnixes Extractor."""
+    vid = _video_id(url_or_id)
+    canonical = "playnixes.com"
+    player_url = f"https://{canonical}/e/{vid}"
+    last_err = None
+
+    for engine in ["requests", "cloudscraper"]:
+        if engine == "cloudscraper" and cloudscraper is None:
+            continue
+        session = _build_session(engine=engine, proxy_url=proxy)
+        try:
+            resp = session.get(player_url, headers={"Referer": f"https://{canonical}/"}, timeout=(8, 15))
+            if resp.status_code != 200:
+                continue
+            html = resp.text
+            if "File is no longer available" in html or "file was deleted" in html.lower():
+                raise RuntimeError("File was deleted on StreamWish")
+
+            title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
+            title = title_m.group(1).strip() if title_m else "StreamWish Video"
+
+            packed_match = re.search(r"(eval\(function\(p,a,c,k,e,d\)\{.*?\.split\('\|'\)[^)]*\)\))", html, re.DOTALL)
+            if not packed_match:
+                continue
+            decoded = unpack(packed_match.group(1))
+
+            streams = dict(re.findall(r'"(hls[234])"\s*:\s*"([^"]+)"', decoded))
+            extra = re.findall(r'https?://[^\s"\']+\.(?:m3u8|txt|mp4)\??[^\s"\']*', decoded)
+            for u in extra:
+                if u not in streams.values():
+                    key = "hls2" if ".m3u8" in u else ("hls3" if ".txt" in u else "hls4")
+                    streams.setdefault(key, u)
+
+            selected_stream = streams.get("hls2") or streams.get("hls3") or streams.get("hls4") or (list(streams.values())[0] if streams else None)
+            if selected_stream:
+                return {
+                    "status": "success",
+                    "provider": "streamwish",
+                    "type": "hls",
+                    "video_id": vid,
+                    "player_url": player_url,
+                    "title": title,
+                    "raw_stream_url": selected_stream,
+                    "stream_url": f"/proxy?url={quote(selected_stream)}",
+                    "proxy": proxy,
+                    "proxy_used": _mask_proxy(proxy),
+                }
+        except Exception as err:
+            last_err = err
+
+    raise RuntimeError(f"StreamWish extraction failed: {last_err}")
+
+
 def extract_streamta(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Extract Streamta / Streamtape MP4 direct stream URL."""
+    """6. Streamta / Streamtape Extractor."""
     vid = _video_id(url_or_id)
     canonical = "streamta.site"
     player_url = f"https://{canonical}/e/{vid}"
@@ -584,224 +777,27 @@ def extract_streamta(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
     raise RuntimeError(f"Streamtape extraction failed: {last_err}")
 
 
-def extract_streamwish(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Extract StreamWish / Playnixes HLS M3U8 stream URL."""
-    vid = _video_id(url_or_id)
-    canonical = "playnixes.com"
-    player_url = f"https://{canonical}/e/{vid}"
-    last_err = None
-
-    for engine in ["requests", "cloudscraper"]:
-        if engine == "cloudscraper" and cloudscraper is None:
-            continue
-        session = _build_session(engine=engine, proxy_url=proxy)
-        try:
-            resp = session.get(player_url, headers={"Referer": f"https://{canonical}/"}, timeout=(8, 15))
-            if resp.status_code != 200:
-                continue
-            html = resp.text
-            if "File is no longer available" in html or "file was deleted" in html.lower():
-                raise RuntimeError("File was deleted on StreamWish")
-
-            title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
-            title = title_m.group(1).strip() if title_m else "StreamWish Video"
-
-            packed_match = re.search(r"(eval\(function\(p,a,c,k,e,d\)\{.*?\.split\('\|'\)[^)]*\)\))", html, re.DOTALL)
-            if not packed_match:
-                continue
-            decoded = unpack(packed_match.group(1))
-
-            streams = dict(re.findall(r'"(hls[234])"\s*:\s*"([^"]+)"', decoded))
-            extra = re.findall(r'https?://[^\s"\']+\.(?:m3u8|txt|mp4)\??[^\s"\']*', decoded)
-            for u in extra:
-                if u not in streams.values():
-                    key = "hls2" if ".m3u8" in u else ("hls3" if ".txt" in u else "hls4")
-                    streams.setdefault(key, u)
-
-            selected_stream = streams.get("hls2") or streams.get("hls3") or streams.get("hls4") or (list(streams.values())[0] if streams else None)
-            if selected_stream:
-                return {
-                    "status": "success",
-                    "provider": "streamwish",
-                    "type": "hls",
-                    "video_id": vid,
-                    "player_url": player_url,
-                    "title": title,
-                    "raw_stream_url": selected_stream,
-                    "stream_url": f"/proxy?url={quote(selected_stream)}",
-                    "proxy": proxy,
-                    "proxy_used": _mask_proxy(proxy),
-                }
-        except Exception as err:
-            last_err = err
-
-    raise RuntimeError(f"StreamWish extraction failed: {last_err}")
-
-
-def extract_luluvdoo(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Extract Luluvdoo / Lulustream HLS M3U8 stream URL."""
-    vid = _video_id(url_or_id)
-    canonical = "luluvdoo.com"
-    player_url = f"https://{canonical}/e/{vid}"
-    last_err = None
-
-    for engine in ["requests", "cloudscraper"]:
-        if engine == "cloudscraper" and cloudscraper is None:
-            continue
-        session = _build_session(engine=engine, proxy_url=proxy)
-        try:
-            resp = session.get(player_url, headers={"Referer": f"https://{canonical}/"}, timeout=(8, 15))
-            if resp.status_code != 200:
-                continue
-            html = resp.text
-            if "File is no longer available" in html or "file was deleted" in html.lower():
-                raise RuntimeError("File was deleted on Luluvdoo")
-
-            title_m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
-            title = title_m.group(1).strip() if title_m else "Luluvdoo Video"
-
-            packed_match = re.search(r"(eval\(function\(p,a,c,k,e,d\)\{.*?\.split\('\|'\)[^)]*\)\))", html, re.DOTALL)
-            if not packed_match:
-                continue
-            decoded = unpack(packed_match.group(1))
-
-            streams = dict(re.findall(r'"(hls[234])"\s*:\s*"([^"]+)"', decoded))
-            extra = re.findall(r'https?://[^\s"\']+\.(?:m3u8|txt|mp4)\??[^\s"\']*', decoded)
-            for u in extra:
-                if u not in streams.values():
-                    key = "hls2" if ".m3u8" in u else ("hls3" if ".txt" in u else "hls4")
-                    streams.setdefault(key, u)
-
-            selected_stream = streams.get("hls2") or streams.get("hls3") or streams.get("hls4") or (list(streams.values())[0] if streams else None)
-            if selected_stream:
-                return {
-                    "status": "success",
-                    "provider": "luluvdoo",
-                    "type": "hls",
-                    "video_id": vid,
-                    "player_url": player_url,
-                    "title": title,
-                    "raw_stream_url": selected_stream,
-                    "stream_url": f"/proxy?url={quote(selected_stream)}",
-                    "proxy": proxy,
-                    "proxy_used": _mask_proxy(proxy),
-                }
-        except Exception as err:
-            last_err = err
-
-    raise RuntimeError(f"Luluvdoo extraction failed: {last_err}")
-
-
-def extract_bysejikuar(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Extract Bysejikuar AES-GCM encrypted HLS stream."""
-    vid = _video_id(url_or_id)
-    canonical = "bysejikuar.com"
-    api_url = f"https://{canonical}/api/videos/{vid}"
-    player_url = f"https://{canonical}/e/{vid}"
-    last_err = None
-
-    for engine in ["requests", "cloudscraper"]:
-        if engine == "cloudscraper" and cloudscraper is None:
-            continue
-        session = _build_session(engine=engine, proxy_url=proxy)
-        try:
-            resp = session.get(api_url, headers={"Referer": player_url, "Origin": f"https://{canonical}"}, timeout=(8, 15))
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
-            playback = data.get("playback", {})
-            sources_data = decrypt_playback(playback)
-            sources = sources_data.get("sources", [])
-            master_m3u8 = sources[0]["url"] if sources else None
-            if master_m3u8:
-                return {
-                    "status": "success",
-                    "provider": "bysejikuar",
-                    "type": "hls",
-                    "video_id": vid,
-                    "player_url": player_url,
-                    "title": data.get("title") or "Bysejikuar Video",
-                    "poster_url": data.get("poster_url") or sources_data.get("poster_url"),
-                    "raw_stream_url": master_m3u8,
-                    "stream_url": f"/proxy?url={quote(master_m3u8)}",
-                    "proxy": proxy,
-                    "proxy_used": _mask_proxy(proxy),
-                }
-        except Exception as err:
-            last_err = err
-
-    raise RuntimeError(f"Bysejikuar extraction failed: {last_err}")
-
-
-def extract_dood(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Extract Playmogo / DoodStream MP4 stream via pass_md5."""
-    vid = _video_id(url_or_id)
-    canonical = "playmogo.com"
-    player_url = f"https://{canonical}/e/{vid}"
-    last_err = None
-
-    for engine in ["requests", "cloudscraper"]:
-        if engine == "cloudscraper" and cloudscraper is None:
-            continue
-        session = _build_session(engine=engine, proxy_url=proxy)
-        try:
-            r = session.get(player_url, timeout=(8, 15), allow_redirects=True)
-            if r.status_code != 200 or "/pass_md5/" not in r.text:
-                continue
-            html = r.text
-            parsed = urlparse(r.url)
-            base = f"{parsed.scheme}://{parsed.netloc}"
-            m = re.search(r"\$\.get\(['\"](/pass_md5/[^'\"]+)['\"]", html)
-            if not m:
-                continue
-            pass_md5_path = m.group(1)
-            token = pass_md5_path.rstrip("/").rsplit("/", 1)[-1]
-            r2 = session.get(
-                base + pass_md5_path,
-                headers={"Referer": str(r.url), "X-Requested-With": "XMLHttpRequest"},
-                timeout=(8, 15),
-            )
-            if r2.status_code == 200 and r2.text.strip().startswith("http"):
-                raw_stream_url = r2.text.strip() + _make_dood_play(token)
-                return {
-                    "status": "success",
-                    "provider": "doodstream",
-                    "type": "mp4",
-                    "video_id": vid,
-                    "player_url": player_url,
-                    "title": "DoodStream Video",
-                    "raw_stream_url": raw_stream_url,
-                    "stream_url": f"/stream/{vid}",
-                    "proxy": proxy,
-                    "proxy_used": _mask_proxy(proxy),
-                }
-        except Exception as err:
-            last_err = err
-
-    raise RuntimeError(f"DoodStream extraction failed: {last_err}")
-
-
 # ---------------------------------------------------------------------------
-# Universal Extractor
+# Universal Extraction & Pipeline Ordering
 # ---------------------------------------------------------------------------
 
 def extract_universal(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
-    """Universal dispatcher that identifies provider and extracts stream."""
+    """Extract stream based on URL detection or waterfall fallback."""
     url = str(url_or_id).strip()
     provider = detect_provider(url)
 
-    if provider == "mixdrop":
+    if provider == "doodstream":
+        res = extract_dood(url, proxy=proxy)
+    elif provider == "mixdrop":
         res = extract_mixdrop(url, proxy=proxy)
-    elif provider == "streamtape":
-        res = extract_streamta(url, proxy=proxy)
-    elif provider == "streamwish":
-        res = extract_streamwish(url, proxy=proxy)
     elif provider == "luluvdoo":
         res = extract_luluvdoo(url, proxy=proxy)
     elif provider == "bysejikuar":
         res = extract_bysejikuar(url, proxy=proxy)
-    elif provider == "doodstream":
-        res = extract_dood(url, proxy=proxy)
+    elif provider == "streamwish":
+        res = extract_streamwish(url, proxy=proxy)
+    elif provider == "streamtape":
+        res = extract_streamta(url, proxy=proxy)
     elif provider in ("hls_direct", "mp4_direct"):
         stream_type = "hls" if provider == "hls_direct" else "mp4"
         res = {
@@ -817,8 +813,8 @@ def extract_universal(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
             "proxy_used": _mask_proxy(proxy),
         }
     else:
-        # Try extractors in sequential fallback order
-        for fn in (extract_mixdrop, extract_streamwish, extract_streamta, extract_dood, extract_luluvdoo, extract_bysejikuar):
+        # Fallback strictly in requested priority: dood -> mixdrop -> luluvdo -> bysejikuar -> streamwish -> streamta
+        for fn in (extract_dood, extract_mixdrop, extract_luluvdoo, extract_bysejikuar, extract_streamwish, extract_streamta):
             try:
                 res = fn(url, proxy=proxy)
                 break
@@ -827,7 +823,6 @@ def extract_universal(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
         else:
             raise RuntimeError(f"Unsupported or unresolvable stream URL: {url}")
 
-    # Cache stream for direct byte proxies
     vid = res["video_id"]
     stream_cache[vid] = {
         "raw_stream_url": res["raw_stream_url"],
@@ -842,12 +837,14 @@ def extract_universal(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
 
 
 def extract_entry_multi_host(entry: dict, requested_host_url: Optional[str] = None) -> dict:
-    """Extract stream from an entry with automatic failover across all detected host links."""
+    """
+    Extract stream with priority order:
+    1. dood -> 2. mixdrop -> 3. luluvdo -> 4. bysejikuar -> 5. streamwish -> 6. streamta
+    """
     all_hosts = _extract_all_host_urls(entry)
     if not all_hosts:
         raise RuntimeError(f"No valid host URLs found in database entry for '{entry.get('title')}'")
 
-    # If specific host requested, try it first
     if requested_host_url:
         target_hosts = [h for h in all_hosts if h["url"] == requested_host_url] + [h for h in all_hosts if h["url"] != requested_host_url]
     else:
@@ -857,7 +854,7 @@ def extract_entry_multi_host(entry: dict, requested_host_url: Optional[str] = No
     for host_info in target_hosts:
         url = host_info["url"]
         provider = host_info["provider"]
-        logger.info(f"Attempting extraction on host [{provider}]: {url}")
+        logger.info(f"Trying host in priority order [{provider}]: {url}")
         try:
             result = extract_universal(url)
             result["title"] = entry.get("title") or result.get("title")
@@ -868,630 +865,230 @@ def extract_entry_multi_host(entry: dict, requested_host_url: Optional[str] = No
             return result
         except Exception as e:
             last_err = e
-            logger.warning(f"Host [{provider}] {url} failed: {e}")
+            logger.warning(f"Host [{provider}] failed: {e}")
 
-    raise RuntimeError(f"All {len(all_hosts)} host streams failed for '{entry.get('title')}': {last_err}")
+    raise RuntimeError(f"All host streams failed for '{entry.get('title')}': {last_err}")
 
 
 # ---------------------------------------------------------------------------
-# HTML Web Player Template
+# Exact Luluvdoo Player UI Template
 # ---------------------------------------------------------------------------
 
-def render_player_html(stream_data: dict) -> str:
-    """Generate dynamic responsive Glassmorphism Player UI with Multi-Host Switcher."""
-    title = stream_data.get("title") or "Universal Stream Player"
-    stream_url = stream_data.get("stream_url") or ""
-    stream_type = stream_data.get("type", "mp4")
-    provider = (stream_data.get("provider") or "Universal").upper()
-    proxy_used = stream_data.get("proxy_used", "Active")
-    tmdb_imdb = stream_data.get("tmdb_imdb") or ""
-    serial = stream_data.get("serial") or ""
-    poster = stream_data.get("poster_url") or ""
-    available_hosts = stream_data.get("available_hosts") or []
-    current_host_url = (stream_data.get("current_host") or {}).get("url", "")
-
-    # Host switch buttons HTML
-    host_buttons_html = ""
-    for idx, h in enumerate(available_hosts, start=1):
-        is_active = (h["url"] == current_host_url)
-        p_name = h["provider"].upper()
-        badge_cls = "host-badge active" if is_active else "host-badge"
-        encoded_url = quote(h["url"])
-        host_buttons_html += f"""
-        <button onclick="switchHost('{encoded_url}')" class="{badge_cls}">
-            <span class="dot"></span> {p_name} (#{idx})
-        </button>
-        """
-
-    return f"""<!DOCTYPE html>
+LULUVDOO_PLAYER_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title} — Universal Stream Player</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7/dist/hls.min.js"></script>
-    <style>
-        :root {{
-            --bg: #07090e;
-            --card-bg: rgba(18, 22, 34, 0.75);
-            --card-border: rgba(255, 255, 255, 0.08);
-            --accent: #6366f1;
-            --accent-glow: rgba(99, 102, 241, 0.35);
-            --cyan: #06b6d4;
-            --emerald: #10b981;
-            --text: #f3f4f6;
-            --text-dim: #9ca3af;
-        }}
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            overflow-x: hidden;
-        }}
-        /* Ambient background glow */
-        .ambient-glow {{
-            position: fixed;
-            top: -20%;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 800px;
-            height: 500px;
-            background: radial-gradient(circle, var(--accent-glow) 0%, rgba(6, 182, 212, 0.15) 50%, transparent 80%);
-            filter: blur(80px);
-            z-index: 0;
-            pointer-events: none;
-        }}
-        .header {{
-            width: 100%;
-            max-width: 1200px;
-            padding: 1.5rem 1.5rem 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 10;
-        }}
-        .logo-box {{
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            text-decoration: none;
-            color: var(--text);
-        }}
-        .logo-icon {{
-            width: 38px;
-            height: 38px;
-            background: linear-gradient(135deg, var(--accent), var(--cyan));
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 800;
-            font-size: 1.2rem;
-            box-shadow: 0 4px 20px var(--accent-glow);
-        }}
-        .logo-title {{
-            font-size: 1.25rem;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-            background: linear-gradient(to right, #fff, #9ca3af);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }}
-        .search-bar {{
-            display: flex;
-            align-items: center;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--card-border);
-            border-radius: 9999px;
-            padding: 0.4rem 0.6rem 0.4rem 1rem;
-            gap: 0.5rem;
-            backdrop-filter: blur(12px);
-        }}
-        .search-input {{
-            background: transparent;
-            border: none;
-            color: var(--text);
-            font-family: inherit;
-            font-size: 0.9rem;
-            outline: none;
-            width: 220px;
-        }}
-        .search-btn {{
-            background: var(--accent);
-            border: none;
-            color: white;
-            padding: 0.4rem 0.9rem;
-            border-radius: 9999px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }}
-        .search-btn:hover {{
-            background: #4f46e5;
-            box-shadow: 0 0 12px var(--accent-glow);
-        }}
-        .main-container {{
-            width: 100%;
-            max-width: 1200px;
-            padding: 0 1.5rem 3rem;
-            z-index: 10;
-        }}
-        .player-wrapper {{
-            background: #000;
-            border-radius: 16px;
-            border: 1px solid var(--card-border);
-            overflow: hidden;
-            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(99, 102, 241, 0.15);
-            position: relative;
-            aspect-ratio: 16 / 9;
-            width: 100%;
-        }}
-        video {{
-            width: 100%;
-            height: 100%;
-            display: block;
-            outline: none;
-        }}
-        .meta-card {{
-            margin-top: 1.5rem;
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            backdrop-filter: blur(20px);
-            border-radius: 16px;
-            padding: 1.5rem;
-            display: flex;
-            flex-direction: column;
-            gap: 1.25rem;
-        }}
-        .title-row {{
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            flex-wrap: wrap;
-            gap: 1rem;
-        }}
-        .video-title {{
-            font-size: 1.6rem;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-        }}
-        .pill-container {{
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            flex-wrap: wrap;
-        }}
-        .pill {{
-            padding: 0.35rem 0.8rem;
-            border-radius: 8px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-        }}
-        .pill-provider {{ background: rgba(99, 102, 241, 0.2); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.4); }}
-        .pill-type {{ background: rgba(6, 182, 212, 0.2); color: #22d3ee; border: 1px solid rgba(6, 182, 212, 0.4); }}
-        .pill-id {{ background: rgba(255, 255, 255, 0.08); color: var(--text-dim); font-family: 'JetBrains Mono', monospace; }}
-        .hosts-section {{
-            display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
-            padding-top: 1rem;
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
-        }}
-        .section-label {{
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }}
-        .host-switcher {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.6rem;
-        }}
-        .host-badge {{
-            display: flex;
-            align-items: center;
-            gap: 0.4rem;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--card-border);
-            color: var(--text-dim);
-            padding: 0.45rem 0.9rem;
-            border-radius: 10px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }}
-        .host-badge:hover {{
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--text);
-            border-color: rgba(255, 255, 255, 0.2);
-        }}
-        .host-badge.active {{
-            background: linear-gradient(135deg, var(--accent), #4f46e5);
-            color: #fff;
-            border-color: transparent;
-            box-shadow: 0 4px 15px var(--accent-glow);
-        }}
-        .dot {{
-            width: 7px;
-            height: 7px;
-            border-radius: 50%;
-            background: currentColor;
-        }}
-        .footer-info {{
-            margin-top: 2rem;
-            text-align: center;
-            font-size: 0.85rem;
-            color: var(--text-dim);
-        }}
-        @media(max-width: 768px) {{
-            .header {{ flex-direction: column; gap: 1rem; align-items: stretch; }}
-            .search-bar {{ width: 100%; }}
-            .search-input {{ width: 100%; }}
-            .title-row {{ flex-direction: column; }}
-        }}
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>{title}</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+<style>
+  :root {{
+    --bg-main: #070913;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+  }}
+  * {{margin:0;padding:0;box-sizing:border-box;}}
+  html,body {{
+    width:100%;height:100%;background:var(--bg-main);
+    overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    color:#fff;
+  }}
+  .player-wrapper {{
+    position:relative;width:100%;height:100%;
+    display:flex;align-items:center;justify-content:center;
+    background:#000;
+  }}
+  video {{
+    width:100%;height:100%;display:block;
+    object-fit:contain;background:#000;outline:none;
+  }}
+  #unmuteBtn {{
+    display:none; position:absolute; top:24px; right:24px; z-index:100;
+    background:rgba(15,23,42,0.85); color:#fff; border:1px solid rgba(255,255,255,0.25);
+    padding:10px 20px; border-radius:30px; font-size:14px; font-weight:600; cursor:pointer;
+    backdrop-filter:blur(10px); display:flex; align-items:center; gap:8px;
+    box-shadow:0 10px 25px rgba(0,0,0,0.6); transition:all 0.2s ease;
+  }}
+  #unmuteBtn:hover {{background:rgba(30,41,59,0.95); transform:scale(1.05); border-color:var(--accent);}}
+  
+  .badge-bar {{
+    position:absolute; top:24px; left:24px; z-index:50;
+    display:flex; align-items:center; gap:10px; pointer-events:none;
+  }}
+  .badge {{
+    background:rgba(15,23,42,0.75); backdrop-filter:blur(8px);
+    border:1px solid rgba(255,255,255,0.15); border-radius:20px;
+    padding:6px 14px; font-size:12px; font-weight:600; color:#cbd5e1;
+    display:flex; align-items:center; gap:6px;
+  }}
+  .badge span.dot {{
+    width:8px; height:8px; border-radius:50%; background:#22c55e;
+    display:inline-block; box-shadow:0 0 8px #22c55e;
+  }}
+  
+  #err {{
+    display:none; position:fixed; inset:0; align-items:center; justify-content:center;
+    flex-direction:column; color:#f87171; font-family:system-ui,sans-serif;
+    font-size:1rem; background:#070913; text-align:center; padding:30px; gap:14px; z-index:99;
+  }}
+  #err button {{
+    background:var(--accent); color:#fff; border:none; border-radius:8px;
+    padding:10px 24px; font-size:14px; font-weight:600; cursor:pointer;
+    margin-top:10px; transition:background 0.2s;
+  }}
+  #err button:hover {{background:var(--accent-hover);}}
+  #err small {{color:#94a3b8; font-size:0.85rem;}}
+</style>
 </head>
 <body>
-    <div class="ambient-glow"></div>
-    
-    <header class="header">
-        <a href="/" class="logo-box">
-            <div class="logo-icon">&#9654;</div>
-            <div class="logo-title">UniversalStream</div>
-        </a>
-        <form class="search-bar" onsubmit="handleSearch(event)">
-            <input type="text" id="searchInput" class="search-input" placeholder="TMDB ID, IMDb (tt...), or Movie Title..." value="{tmdb_imdb.split('/')[0] if tmdb_imdb else ''}">
-            <button type="submit" class="search-btn">Play</button>
-        </form>
-    </header>
 
-    <main class="main-container">
-        <div class="player-wrapper">
-            <video id="videoPlayer" controls autoplay playsinline poster="{poster}"></video>
-        </div>
+<div class="player-wrapper">
+  <div class="badge-bar">
+    <div class="badge"><span class="dot"></span> {provider_label} Stream</div>
+    <div id="qualityBadge" class="badge" style="display:none;">Auto</div>
+  </div>
 
-        <div class="meta-card">
-            <div class="title-row">
-                <h1 class="video-title">{title}</h1>
-                <div class="pill-container">
-                    <span class="pill pill-provider">{provider}</span>
-                    <span class="pill pill-type">{stream_type.upper()}</span>
-                    <span class="pill pill-id">{tmdb_imdb or f"SERIAL #{serial}"}</span>
-                </div>
-            </div>
+  <video id="v" controls autoplay playsinline preload="auto"></video>
+  
+  <button id="unmuteBtn" onclick="toggleUnmute()">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>
+    <span>Click to Unmute</span>
+  </button>
+</div>
 
-            <div class="hosts-section">
-                <span class="section-label">Available Stream Hosts (Click to Switch):</span>
-                <div class="host-switcher">
-                    {host_buttons_html if host_buttons_html else '<span style="color:var(--text-dim);font-size:0.85rem;">Single Host Direct Play</span>'}
-                </div>
-            </div>
-        </div>
+<div id="err">
+  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+  <div style="font-size:18px; font-weight:700; color:#f1f5f9;">Stream Unavailable</div>
+  <div>The video stream could not be loaded or the link expired.</div>
+  <small>Reload the stream or try another host.</small>
+  <button onclick="window.location.reload()">Reload Player</button>
+</div>
 
-        <div class="footer-info">
-            Universal Multi-Host Stream Server & Player &bull; Fast Proxy Pipeline &bull; Proxy: {proxy_used}
-        </div>
-    </main>
+<script>
+  const video = document.getElementById("v");
+  const errBox = document.getElementById("err");
+  const unmuteBtn = document.getElementById("unmuteBtn");
+  const qualityBadge = document.getElementById("qualityBadge");
+  const streamUrl = "{stream_url}";
+  const streamType = "{stream_type}";
 
-    <script>
-        const streamUrl = "{stream_url}";
-        const streamType = "{stream_type}";
-        const video = document.getElementById("videoPlayer");
+  function showError() {{
+    errBox.style.display = "flex";
+  }}
 
-        function initPlayer() {{
-            if (!streamUrl) return;
+  function toggleUnmute() {{
+    video.muted = false;
+    unmuteBtn.style.display = "none";
+  }}
 
-            if (streamType === "hls") {{
-                if (Hls.isSupported()) {{
-                    const hls = new Hls({{
-                        enableWorker: true,
-                        lowLatencyMode: true,
-                        backBufferLength: 90
-                    }});
-                    hls.loadSource(streamUrl);
-                    hls.attachMedia(video);
-                    hls.on(Hls.Events.MANIFEST_PARSED, function() {{
-                        video.play().catch(e => console.log("Autoplay blocked:", e));
-                    }});
-                }} else if (video.canPlayType("application/vnd.apple.mpegurl")) {{
-                    video.src = streamUrl;
-                    video.play().catch(e => console.log("Autoplay blocked:", e));
-                }}
-            }} else {{
-                video.src = streamUrl;
-                video.play().catch(e => console.log("Autoplay blocked:", e));
-            }}
+  function tryAutoPlay() {{
+    video.play().then(() => {{
+      if (video.muted) {{
+        unmuteBtn.style.display = "flex";
+      }}
+    }}).catch(() => {{
+      video.muted = true;
+      video.play().then(() => {{
+        unmuteBtn.style.display = "flex";
+      }}).catch(showError);
+    }});
+  }}
+
+  if (streamType === "hls") {{
+    if (Hls.isSupported()) {{
+      const hls = new Hls({{
+        debug: false,
+        enableWorker: true,
+        lowLatencyMode: false,
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        xhrSetup: function(xhr, url) {{
+          xhr.withCredentials = false;
         }}
+      }});
 
-        function switchHost(encodedHostUrl) {{
-            const currentUrl = new URL(window.location.href);
-            currentUrl.searchParams.set("host_url", decodeURIComponent(encodedHostUrl));
-            window.location.href = currentUrl.toString();
+      hls.loadSource(streamUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {{
+        if (data.levels && data.levels.length > 0) {{
+          qualityBadge.style.display = "flex";
+          const h = data.levels[0].height || (data.levels[1] ? data.levels[1].height : null);
+          qualityBadge.textContent = h ? `${{h}}p` : "HD";
         }}
+        tryAutoPlay();
+      }});
 
-        function handleSearch(e) {{
-            e.preventDefault();
-            const val = document.getElementById("searchInput").value.trim();
-            if (!val) return;
-            if (val.startsWith("http")) {{
-                window.location.href = "/api/direct/" + encodeURIComponent(val);
-            }} else if (val.toLowerCase().startsWith("tt")) {{
-                window.location.href = "/api/" + val;
-            }} else if (/^\\d+$/.test(val)) {{
-                window.location.href = "/api/" + val;
-            }} else {{
-                window.location.href = "/api/db/search?q=" + encodeURIComponent(val);
-            }}
+      hls.on(Hls.Events.LEVEL_SWITCHED, function(event, data) {{
+        const level = hls.levels[data.level];
+        if (level && level.height) {{
+          qualityBadge.textContent = `${{level.height}}p`;
         }}
+      }});
 
-        // Keyboard Shortcuts
-        document.addEventListener("keydown", (e) => {{
-            if (document.activeElement.tagName === "INPUT") return;
-            if (e.code === "Space") {{
-                e.preventDefault();
-                video.paused ? video.play() : video.pause();
-            }} else if (e.code === "ArrowRight") {{
-                video.currentTime += 10;
-            }} else if (e.code === "ArrowLeft") {{
-                video.currentTime -= 10;
-            }} else if (e.code === "KeyF") {{
-                if (!document.fullscreenElement) {{
-                    document.querySelector(".player-wrapper").requestFullscreen().catch(err => {{}});
-                }} else {{
-                    document.exitFullscreen();
-                }}
-            }}
-        }});
+      hls.on(Hls.Events.ERROR, function(event, data) {{
+        if (data.fatal) {{
+          switch(data.type) {{
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              hls.recoverMediaError();
+              break;
+            default:
+              hls.destroy();
+              showError();
+              break;
+          }}
+        }}
+      }});
+    }} else if (video.canPlayType("application/vnd.apple.mpegurl")) {{
+      video.src = streamUrl;
+      video.addEventListener("loadedmetadata", tryAutoPlay);
+      video.onerror = showError;
+    }} else {{
+      showError();
+    }}
+  }} else {{
+    // Direct MP4 stream (Dood, Mixdrop, Streamtape)
+    video.src = streamUrl;
+    video.addEventListener("loadedmetadata", tryAutoPlay);
+    video.onerror = showError;
+    tryAutoPlay();
+  }}
 
-        initPlayer();
-    </script>
+  // Keyboard Shortcuts: Space (Play/Pause), Left/Right (Seek 10s), F (Fullscreen), M (Mute)
+  window.addEventListener("keydown", (e) => {{
+    if (["Space", "ArrowLeft", "ArrowRight", "KeyF", "KeyM"].includes(e.code)) {{
+      e.preventDefault();
+      if (e.code === "Space") video.paused ? video.play() : video.pause();
+      if (e.code === "ArrowLeft") video.currentTime = Math.max(0, video.currentTime - 10);
+      if (e.code === "ArrowRight") video.currentTime = Math.min(video.duration, video.currentTime + 10);
+      if (e.code === "KeyF") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+      if (e.code === "KeyM") video.muted = !video.muted;
+    }}
+  }});
+</script>
 </body>
-</html>
-"""
+</html>"""
 
 
-def render_home_html() -> str:
-    """Generate sleek landing page with statistics, database explorer, and stream player."""
-    db_len = len(get_db())
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal Stream Player & API</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <style>
-        :root {{
-            --bg: #07090e;
-            --card-bg: rgba(18, 22, 34, 0.75);
-            --card-border: rgba(255, 255, 255, 0.08);
-            --accent: #6366f1;
-            --cyan: #06b6d4;
-            --emerald: #10b981;
-            --text: #f3f4f6;
-            --text-dim: #9ca3af;
-        }}
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: 'Outfit', sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 2rem 1.5rem;
-        }}
-        .ambient-glow {{
-            position: fixed;
-            top: -20%;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 900px;
-            height: 600px;
-            background: radial-gradient(circle, rgba(99, 102, 241, 0.25) 0%, rgba(6, 182, 212, 0.1) 50%, transparent 80%);
-            filter: blur(90px);
-            z-index: 0;
-            pointer-events: none;
-        }}
-        .container {{
-            width: 100%;
-            max-width: 1100px;
-            z-index: 10;
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
-        }}
-        .hero {{
-            text-align: center;
-            padding: 3rem 1rem 1rem;
-        }}
-        .badge {{
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background: rgba(99, 102, 241, 0.15);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            color: #a5b4fc;
-            padding: 0.4rem 1rem;
-            border-radius: 9999px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-bottom: 1.25rem;
-        }}
-        .hero-title {{
-            font-size: 3rem;
-            font-weight: 800;
-            letter-spacing: -1px;
-            background: linear-gradient(135deg, #fff 30%, #9ca3af 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 1rem;
-        }}
-        .hero-subtitle {{
-            color: var(--text-dim);
-            font-size: 1.15rem;
-            max-width: 650px;
-            margin: 0 auto 2rem;
-            line-height: 1.6;
-        }}
-        .search-box-large {{
-            max-width: 650px;
-            margin: 0 auto;
-            display: flex;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 0.6rem 0.6rem 0.6rem 1.25rem;
-            gap: 0.75rem;
-            backdrop-filter: blur(20px);
-            box-shadow: 0 10px 35px rgba(0, 0, 0, 0.5);
-        }}
-        .search-box-large input {{
-            flex: 1;
-            background: transparent;
-            border: none;
-            color: #fff;
-            font-family: inherit;
-            font-size: 1.05rem;
-            outline: none;
-        }}
-        .search-box-large button {{
-            background: linear-gradient(135deg, var(--accent), #4f46e5);
-            border: none;
-            color: white;
-            padding: 0.75rem 1.75rem;
-            border-radius: 12px;
-            font-weight: 700;
-            font-size: 0.95rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            box-shadow: 0 4px 15px var(--accent-glow);
-        }}
-        .search-box-large button:hover {{
-            transform: translateY(-1px);
-            box-shadow: 0 6px 20px var(--accent-glow);
-        }}
-        .grid-cards {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 1.5rem;
-        }}
-        .card {{
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 16px;
-            padding: 1.5rem;
-            backdrop-filter: blur(20px);
-        }}
-        .card-title {{
-            font-size: 1.1rem;
-            font-weight: 700;
-            margin-bottom: 0.75rem;
-            color: #fff;
-        }}
-        .card-p {{
-            color: var(--text-dim);
-            font-size: 0.9rem;
-            line-height: 1.5;
-            margin-bottom: 1rem;
-        }}
-        .endpoints-list {{
-            list-style: none;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }}
-        .endpoint-item {{
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.8rem;
-            background: rgba(0, 0, 0, 0.4);
-            padding: 0.5rem 0.75rem;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.04);
-            color: #38bdf8;
-            display: flex;
-            justify-content: space-between;
-        }}
-        .endpoint-item a {{
-            color: inherit;
-            text-decoration: none;
-        }}
-        .endpoint-item a:hover {{
-            text-decoration: underline;
-        }}
-    </style>
-</head>
-<body>
-    <div class="ambient-glow"></div>
-    <div class="container">
-        <div class="hero">
-            <div class="badge">&#9889; {db_len:,} Entries Loaded &bull; Multi-Host Auto-Failover</div>
-            <h1 class="hero-title">Universal Stream Player & API</h1>
-            <p class="hero-subtitle">High-performance unified streaming engine for MixDrop, StreamWish, Streamtape, DoodStream, Luluvdoo, and Bysejikuar.</p>
-            
-            <form class="search-box-large" onsubmit="handleSearch(event)">
-                <input type="text" id="searchInput" placeholder="Enter TMDB ID (e.g. 68), IMDb (tt0088846), or direct URL...">
-                <button type="submit">Play Now</button>
-            </form>
-        </div>
+def _wants_html(req) -> bool:
+    if req.args.get("format") == "json":
+        return False
+    accept = req.headers.get("Accept", "")
+    return "text/html" in accept or "*/*" in accept
 
-        <div class="grid-cards">
-            <div class="card">
-                <h3 class="card-title">&#127916; Quick Play Examples</h3>
-                <p class="card-p">Test instantly with popular entries in the dataset:</p>
-                <ul class="endpoints-list">
-                    <li class="endpoint-item"><a href="/api/68">/api/68 &rarr; Brazil (TMDB)</a></li>
-                    <li class="endpoint-item"><a href="/api/tt0088846">/api/tt0088846 &rarr; Brazil (IMDb)</a></li>
-                    <li class="endpoint-item"><a href="/api/515248">/api/515248 &rarr; Streamta / Dood Host</a></li>
-                    <li class="endpoint-item"><a href="/api/20197">/api/20197 &rarr; StreamWish HLS</a></li>
-                </ul>
-            </div>
 
-            <div class="card">
-                <h3 class="card-title">&#128268; Core API Endpoints</h3>
-                <p class="card-p">Integrate directly into your frontend or player apps:</p>
-                <ul class="endpoints-list">
-                    <li class="endpoint-item"><a href="/api/db/stats">GET /api/db/stats</a> <span>Database Stats</span></li>
-                    <li class="endpoint-item"><a href="/api/db/search?q=star">GET /api/db/search?q=...</a> <span>Title Search</span></li>
-                    <li class="endpoint-item"><a href="/healthz">GET /healthz</a> <span>Service Health</span></li>
-                    <li class="endpoint-item"><a href="/api/68?format=json">GET /api/:id?format=json</a> <span>Raw Stream JSON</span></li>
-                </ul>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        function handleSearch(e) {{
-            e.preventDefault();
-            const val = document.getElementById("searchInput").value.trim();
-            if (!val) return;
-            if (val.startsWith("http")) {{
-                window.location.href = "/api/direct/" + encodeURIComponent(val);
-            }} else if (val.toLowerCase().startsWith("tt") || /^\\d+$/.test(val)) {{
-                window.location.href = "/api/" + val;
-            }} else {{
-                window.location.href = "/api/db/search?q=" + encodeURIComponent(val);
-            }}
-        }}
-    </script>
-</body>
-</html>
-"""
+def _player_response(data: dict) -> Response:
+    provider = (data.get("provider") or "Universal").capitalize()
+    html = LULUVDOO_PLAYER_HTML.format(
+        title=data.get("title") or "Stream Player",
+        stream_url=data.get("stream_url", ""),
+        stream_type=data.get("type", "mp4"),
+        provider_label=provider,
+    )
+    return Response(html, content_type="text/html")
 
 
 # ---------------------------------------------------------------------------
@@ -1499,31 +1096,35 @@ def render_home_html() -> str:
 # ---------------------------------------------------------------------------
 
 @app.route("/")
-def home():
-    if request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
-        return jsonify({
-            "service": "Universal Stream API & Multi-Host Player",
-            "status": "online",
-            "db_entries": len(get_db()),
-            "proxy": _mask_proxy(DEFAULT_PROXY),
-            "endpoints": {
-                "health": "/healthz",
-                "tmdb_lookup": "/api/<int:tmdb_id>",
-                "imdb_lookup": "/api/<imdb_id>",
-                "direct_stream": "/api/direct/<url>",
-                "extract_post": "/api/extract (POST json: {url: ...})",
-                "db_stats": "/api/db/stats",
-                "db_search": "/api/db/search?q=<query>",
-                "stream_proxy": "/stream/<video_id>",
-                "hls_segment_proxy": "/proxy?url=<target_url>",
-            }
-        })
-    return render_home_html()
+def root():
+    return jsonify({
+        "service": "universal-stream-api",
+        "status": "online",
+        "load_priority": [
+            "1. DoodStream (playmogo)",
+            "2. MixDrop",
+            "3. Luluvdoo (lulustream)",
+            "4. Bysejikuar (bikebyse)",
+            "5. StreamWish (playnixes)",
+            "6. Streamta (streamtape)",
+        ],
+        "db_entries": len(get_db()),
+        "endpoints": {
+            "tmdb": "/api/<tmdb_id>",
+            "imdb": "/api/<imdb_id>",
+            "direct": "/api/direct/<url_or_id>",
+            "stream": "/stream/<video_id>",
+            "proxy": "/proxy?url=<target_url>",
+            "db_stats": "/api/db/stats",
+            "db_search": "/api/db/search?q=<query>",
+            "health": "/healthz",
+        }
+    })
 
 
 @app.route("/healthz")
 def healthz():
-    return jsonify({"status": "healthy", "timestamp": time.time(), "db_count": len(get_db())})
+    return jsonify({"status": "healthy", "service": "universal-stream-api", "db_count": len(get_db()), "timestamp": time.time()})
 
 
 @app.route("/api/db/stats")
@@ -1535,6 +1136,7 @@ def db_stats():
         "fetched_at": _db_fetched_at,
         "db_url": DB_URL,
         "proxy": _mask_proxy(DEFAULT_PROXY),
+        "priority": ["dood", "mixdrop", "luluvdoo", "bysejikuar", "streamwish", "streamtape"]
     })
 
 
@@ -1547,47 +1149,67 @@ def db_search():
     return jsonify({"status": "success", "query": q, "count": len(results), "results": results})
 
 
+@app.route("/api/<int:tmdb_id>")
+def api_tmdb(tmdb_id: int):
+    """GET /api/<tmdb_id> - auto-plays in Luluvdoo style player."""
+    entry = lookup_by_tmdb(str(tmdb_id))
+    if not entry:
+        return jsonify({"error": f"TMDB ID '{tmdb_id}' not found in database"}), 404
+    try:
+        data = extract_entry_multi_host(entry, requested_host_url=request.args.get("host_url"))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    data["id_type"] = "tmdb"
+    data["id_value"] = tmdb_id
+    return _player_response(data) if _wants_html(request) else jsonify(data)
+
+
 @app.route("/api/<path:query_id>")
-def api_lookup(query_id: str):
-    """Universal ID Lookup (TMDB ID, IMDb ID, serial, or title)."""
-    # Exclude direct or reserved routes
-    if query_id.startswith("direct/") or query_id.startswith("db/"):
+def api_query_handler(query_id: str):
+    """Universal router for IMDB ID (tt...), direct video IDs, and DB lookups."""
+    if query_id.startswith("db/"):
         return Response("Not found", status=404)
 
-    entry = lookup_any(query_id)
-    if not entry:
-        return jsonify({"status": "error", "message": f"No database entry found for query '{query_id}'"}), 404
+    cleaned = query_id.strip()
 
-    requested_host = request.args.get("host_url")
-    try:
-        result = extract_entry_multi_host(entry, requested_host_url=requested_host)
-    except Exception as e:
-        logger.error(f"Multi-host extraction error for {query_id}: {e}")
-        return jsonify({"status": "error", "message": str(e), "entry": entry}), 502
+    # 1. Direct URL
+    if cleaned.startswith("http:/") or cleaned.startswith("https:/") or any(alias in cleaned for alias in (DOOD_ALIASES | MIXDROP_ALIASES | LULUVDOO_ALIASES | BYSE_ALIASES | STREAMWISH_ALIASES | STREAMTA_ALIASES)):
+        return api_direct(cleaned)
 
-    # Return JSON or HTML player
-    if request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
-        return jsonify(result)
-    return render_player_html(result)
+    # 2. Database lookup (IMDb tt... or serial)
+    entry = lookup_any(cleaned)
+    if entry:
+        try:
+            data = extract_entry_multi_host(entry, requested_host_url=request.args.get("host_url"))
+            data["id_type"] = "imdb" if cleaned.lower().startswith("tt") else "query"
+            data["id_value"] = cleaned
+            return _player_response(data) if _wants_html(request) else jsonify(data)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # 3. Direct video ID
+    return api_direct(cleaned)
 
 
 @app.route("/api/direct/<path:direct_url>")
 def api_direct(direct_url: str):
-    """Extract and play any direct stream provider URL."""
-    try:
-        res = extract_universal(direct_url)
-    except Exception as e:
-        logger.error(f"Direct extraction error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 502
+    if direct_url.startswith("https:/") and not direct_url.startswith("https://"):
+        direct_url = "https://" + direct_url[7:]
+    elif direct_url.startswith("http:/") and not direct_url.startswith("http://"):
+        direct_url = "http://" + direct_url[6:]
 
-    if request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
-        return jsonify(res)
-    return render_player_html(res)
+    try:
+        result = extract_universal(direct_url)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    result["id_type"] = "direct"
+    return _player_response(result) if _wants_html(request) else jsonify(result)
 
 
 @app.route("/api/extract", methods=["POST"])
 def api_extract_post():
-    """POST endpoint for JSON extract requests: {"url": "..."}."""
     body = request.get_json(silent=True) or {}
     url = body.get("url")
     if not url:
@@ -1600,16 +1222,16 @@ def api_extract_post():
 
 
 # ---------------------------------------------------------------------------
-# MP4 Video Proxy (/stream/<video_id>)
+# Video & HLS Proxies
 # ---------------------------------------------------------------------------
 
-@app.route("/stream/<video_id>")
+@app.route("/stream/<path:video_id>")
 def stream_proxy(video_id: str):
-    """Proxy MP4 video bytes supporting Range requests (206 Partial Content)."""
-    cached = stream_cache.get(video_id)
+    """Handles MP4 Range proxying and Luluvdoo M3U8 rewrite proxying."""
+    clean_vid = video_id.replace(".m3u8", "").replace(".ts", "")
+    cached = stream_cache.get(clean_vid)
     if not cached:
-        # Try finding in DB or extracting directly
-        entry = lookup_any(video_id)
+        entry = lookup_any(clean_vid)
         if entry:
             try:
                 res = extract_entry_multi_host(entry)
@@ -1618,15 +1240,55 @@ def stream_proxy(video_id: str):
                 pass
 
     if not cached:
-        return Response("Video stream not found or expired. Please re-request /api/<id>.", status=404)
+        return Response("Stream not found or expired.", status=404)
 
-    raw_stream_url = cached["raw_stream_url"]
+    raw_url = cached["raw_stream_url"]
+    stream_type = cached.get("type", "mp4")
     proxy = cached.get("proxy") or os.getenv("PROXY", DEFAULT_PROXY)
     proxy_dict = get_proxy_dict(proxy)
 
+    # M3U8 handling
+    if stream_type == "hls" or video_id.endswith(".m3u8"):
+        try:
+            upstream = requests.get(
+                raw_url,
+                headers={"User-Agent": UA, "Accept": "*/*"},
+                proxies=proxy_dict,
+                timeout=(10, 20),
+            )
+            if upstream.status_code != 200:
+                return Response(f"Upstream returned {upstream.status_code}", status=upstream.status_code)
+
+            base_url = raw_url.rsplit("/", 1)[0] + "/"
+            rewritten_lines = []
+            for line in upstream.text.splitlines():
+                line_str = line.strip()
+                if not line_str:
+                    continue
+                if line_str.startswith("#"):
+                    if 'URI="' in line_str:
+                        def replace_uri(match):
+                            return f'URI="/proxy?url={quote(urljoin(base_url, match.group(1)))}"'
+                        line_str = re.sub(r'URI="([^"]+)"', replace_uri, line_str)
+                    rewritten_lines.append(line_str)
+                else:
+                    rewritten_lines.append(f"/proxy?url={quote(urljoin(base_url, line_str))}")
+
+            resp_headers = {
+                "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Cache-Control": "no-cache",
+            }
+            return Response("\n".join(rewritten_lines) + "\n", status=200, headers=resp_headers)
+        except Exception as e:
+            return Response(f"M3U8 Proxy error: {e}", status=502)
+
+    # MP4 Range handling
     req_headers = {
         "User-Agent": UA,
-        "Referer": cached.get("player_url") or raw_stream_url,
+        "Referer": cached.get("player_url") or raw_url,
         "Accept": "*/*",
     }
     if "Range" in request.headers:
@@ -1634,7 +1296,7 @@ def stream_proxy(video_id: str):
 
     try:
         upstream = requests.get(
-            raw_stream_url,
+            raw_url,
             headers=req_headers,
             proxies=proxy_dict,
             stream=True,
@@ -1666,90 +1328,91 @@ def stream_proxy(video_id: str):
         return Response(f"Stream proxy error: {e}", status=502)
 
 
-# ---------------------------------------------------------------------------
-# HLS Master & TS Segment Proxy (/proxy?url=<target_url>)
-# ---------------------------------------------------------------------------
-
 @app.route("/proxy")
-def hls_proxy():
-    """Proxy and rewrite HLS M3U8 playlists & MPEG-TS segments."""
+def hls_segment_proxy():
+    """Proxies TS segments / nested M3U8 files with CORS headers."""
     target_url = request.args.get("url")
     if not target_url:
-        return Response("Missing 'url' query parameter", status=400)
+        return Response("Missing target url", status=400)
 
     target_url = unquote(target_url)
     proxy = os.getenv("PROXY", DEFAULT_PROXY)
     proxy_dict = get_proxy_dict(proxy)
 
-    headers = {
+    req_headers = {
         "User-Agent": UA,
         "Referer": f"{urlparse(target_url).scheme}://{urlparse(target_url).netloc}/",
         "Accept": "*/*",
     }
     if "Range" in request.headers:
-        headers["Range"] = request.headers["Range"]
+        req_headers["Range"] = request.headers["Range"]
 
     try:
-        r = requests.get(
+        upstream = requests.get(
             target_url,
-            headers=headers,
+            headers=req_headers,
             proxies=proxy_dict,
             stream=True,
             timeout=(10, 30),
             allow_redirects=True,
         )
 
-        content_type = r.headers.get("Content-Type", "")
+        c_type = upstream.headers.get("Content-Type", "video/MP2T")
+        is_playlist = (".m3u8" in target_url or ".txt" in target_url or "mpegurl" in c_type.lower())
 
-        # If M3U8 playlist, rewrite URLs to route through /proxy
-        if any(kw in content_type.lower() for kw in ("mpegurl", "m3u8")) or target_url.endswith(".m3u8") or ".m3u8?" in target_url:
-            text = r.text
-            base_url = r.url
+        if is_playlist:
+            base_url = target_url.rsplit("/", 1)[0] + "/"
             rewritten_lines = []
-            for line in text.splitlines():
+            for line in upstream.text.splitlines():
                 line_str = line.strip()
                 if not line_str:
-                    rewritten_lines.append(line)
                     continue
-
-                if line_str.startswith("#EXT-X-KEY") or line_str.startswith("#EXT-X-MAP"):
-                    def rewrite_uri(match):
-                        full = urljoin(base_url, match.group(1))
-                        return f'URI="/proxy?url={quote(full)}"'
-                    line = re.sub(r'URI="([^"]+)"', rewrite_uri, line)
-                    rewritten_lines.append(line)
-                elif not line_str.startswith("#"):
-                    full_seg_url = urljoin(base_url, line_str)
-                    rewritten_lines.append(f"/proxy?url={quote(full_seg_url)}")
+                if line_str.startswith("#"):
+                    if 'URI="' in line_str:
+                        def replace_uri(match):
+                            return f'URI="/proxy?url={quote(urljoin(base_url, match.group(1)))}"'
+                        line_str = re.sub(r'URI="([^"]+)"', replace_uri, line_str)
+                    rewritten_lines.append(line_str)
                 else:
-                    rewritten_lines.append(line)
+                    rewritten_lines.append(f"/proxy?url={quote(urljoin(base_url, line_str))}")
 
-            rewritten_manifest = "\n".join(rewritten_lines)
-            resp = Response(rewritten_manifest, status=200, mimetype="application/vnd.apple.mpegurl")
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Headers"] = "*"
-            resp.headers["Cache-Control"] = "no-cache"
-            return resp
+            resp_headers = {
+                "Content-Type": "application/vnd.apple.mpegurl; charset=utf-8",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Cache-Control": "no-cache",
+            }
+            return Response("\n".join(rewritten_lines) + "\n", status=200, headers=resp_headers)
 
-        # TS segment / binary pass-through
-        resp_headers = {}
-        for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
-            if h in r.headers:
-                resp_headers[h] = r.headers[h]
-
-        resp_headers["Access-Control-Allow-Origin"] = "*"
-        resp_headers["Access-Control-Allow-Headers"] = "*"
-        resp_headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+        resp_headers = {
+            "Content-Type": c_type,
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Cache-Control": "public, max-age=3600",
+        }
+        if "Content-Length" in upstream.headers:
+            resp_headers["Content-Length"] = upstream.headers["Content-Length"]
+        if "Content-Range" in upstream.headers:
+            resp_headers["Content-Range"] = upstream.headers["Content-Range"]
 
         def generate():
-            for chunk in r.iter_content(chunk_size=512 * 1024):
-                if chunk:
-                    yield chunk
+            try:
+                for chunk in upstream.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
 
-        return Response(stream_with_context(generate()), status=r.status_code, headers=resp_headers)
+        return Response(
+            stream_with_context(generate()),
+            status=upstream.status_code,
+            headers=resp_headers,
+            direct_passthrough=True,
+        )
     except Exception as e:
-        logger.error(f"HLS proxy error for {target_url}: {e}")
-        return Response(f"Proxy error: {e}", status=502)
+        logger.error(f"Segment proxy error: {e}")
+        return Response(f"Segment proxy error: {e}", status=502)
 
 
 # ---------------------------------------------------------------------------
@@ -1758,5 +1421,5 @@ def hls_proxy():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
-    logger.info(f"UniversalStream API & Player starting on :{port} | Proxy: {_mask_proxy(DEFAULT_PROXY)}")
+    logger.info(f"UniversalStream server starting on :{port} | Proxy: {_mask_proxy(DEFAULT_PROXY)}")
     app.run(host="0.0.0.0", port=port, debug=False)
