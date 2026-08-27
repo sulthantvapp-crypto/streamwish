@@ -28,7 +28,7 @@ from typing import Optional, Tuple, Any, Dict, List
 from urllib.parse import urljoin, urlparse, quote, unquote, urlunparse
 
 import requests
-from flask import Flask, Response, jsonify, request, stream_with_context
+from flask import Flask, Response, jsonify, request, stream_with_context, redirect
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 try:
@@ -1198,15 +1198,18 @@ def db_search():
 
 @app.route("/api/<int:tmdb_id>")
 def api_tmdb(tmdb_id: int):
-    """GET /api/<tmdb_id> - checks VOE worker server first; if playing, plays immediately, else shifts to DB/other hosts."""
-    # 1. First check VOE server directly for this TMDB ID
+    """GET /api/<tmdb_id> - auto-opens https://voe-sx-movies-play.ytbro8326.workers.dev/<tmdb_id> if VOE matches; else shifts to other hosts."""
+    # 1. First check if VOE server plays this TMDB ID
     if not request.args.get("host_url"):
         try:
             logger.info(f"Checking VOE server first for TMDB ID {tmdb_id}")
             voe_res = extract_voe(str(tmdb_id))
+            # If request is from browser (HTML), auto open/redirect to VOE worker server player directly
+            if _wants_html(request):
+                return redirect(f"{VOE_WORKER_BASE.rstrip('/')}/{tmdb_id}")
             voe_res["id_type"] = "tmdb"
             voe_res["id_value"] = tmdb_id
-            return _player_response(voe_res) if _wants_html(request) else jsonify(voe_res)
+            return jsonify(voe_res)
         except Exception as e:
             logger.info(f"VOE worker not found or failed for TMDB {tmdb_id}: {e}. Auto-shifting to other hosts.")
 
@@ -1218,6 +1221,10 @@ def api_tmdb(tmdb_id: int):
         data = extract_entry_multi_host(entry, requested_host_url=request.args.get("host_url"))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+    # If the chosen host is VOE and user is in browser, redirect directly to VOE worker player
+    if data.get("provider") == "voe" and _wants_html(request):
+        return redirect(f"{VOE_WORKER_BASE.rstrip('/')}/{tmdb_id}")
 
     data["id_type"] = "tmdb"
     data["id_value"] = tmdb_id
@@ -1241,9 +1248,12 @@ def api_query_handler(query_id: str):
         try:
             logger.info(f"Checking VOE server first for query ID {cleaned}")
             voe_res = extract_voe(cleaned)
+            # If request is from browser, auto open/redirect to VOE worker server player directly
+            if _wants_html(request):
+                return redirect(f"{VOE_WORKER_BASE.rstrip('/')}/{cleaned}")
             voe_res["id_type"] = "imdb" if cleaned.lower().startswith("tt") else "tmdb"
             voe_res["id_value"] = cleaned
-            return _player_response(voe_res) if _wants_html(request) else jsonify(voe_res)
+            return jsonify(voe_res)
         except Exception as e:
             logger.info(f"VOE worker check failed for {cleaned}: {e}. Auto-shifting to other hosts.")
 
@@ -1252,6 +1262,9 @@ def api_query_handler(query_id: str):
     if entry:
         try:
             data = extract_entry_multi_host(entry, requested_host_url=request.args.get("host_url"))
+            # If the selected host is VOE, redirect browser directly to VOE worker server
+            if data.get("provider") == "voe" and _wants_html(request):
+                return redirect(f"{VOE_WORKER_BASE.rstrip('/')}/{cleaned}")
             data["id_type"] = "imdb" if cleaned.lower().startswith("tt") else "query"
             data["id_value"] = cleaned
             return _player_response(data) if _wants_html(request) else jsonify(data)
