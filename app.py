@@ -2,6 +2,7 @@
 Universal Stream Player & Multi-Host API Server
 
 Exact Luluvdoo Fluid Player UI & Priority Stream Pipeline:
+0. VOE.sx (voe-sx-movies-play worker)
 1. DoodStream / Playmogo
 2. MixDrop
 3. Luluvdoo / Lulustream
@@ -61,8 +62,9 @@ GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 DB_REFRESH_SECS = int(os.getenv("DB_REFRESH_SECS", "3600"))
 
 # Provider Priority Order
-# 1. dood -> 2. mixdrop -> 3. luluvdo -> 4. bysejikuarcom -> 5. streamwish -> 6. streamta
+# 0. VOE.sx (voe-sx-movies-play worker) -> 1. dood -> 2. mixdrop -> 3. luluvdo -> 4. bysejikuarcom -> 5. streamwish -> 6. streamta
 PROVIDER_PRIORITY = {
+    "voe": 0,
     "doodstream": 1,
     "mixdrop": 2,
     "luluvdoo": 3,
@@ -70,6 +72,13 @@ PROVIDER_PRIORITY = {
     "streamwish": 5,
     "streamtape": 6,
     "unknown": 99,
+}
+
+VOE_WORKER_BASE = os.getenv("VOE_WORKER_BASE", "https://voe-sx-movies-play.ytbro8326.workers.dev")
+
+VOE_ALIASES = {
+    "voe.sx", "voe-sx-movies-play.ytbro8326.workers.dev", "tracylocalschool.com",
+    "audaciousdefrauded.com", "reputationscreaming.com", "tupmishk.com",
 }
 
 DOOD_ALIASES = {
@@ -404,6 +413,8 @@ def detect_provider(url: str) -> str:
     except Exception:
         return "unknown"
 
+    if any(alias in netloc for alias in VOE_ALIASES):
+        return "voe"
     if any(alias in netloc for alias in DOOD_ALIASES):
         return "doodstream"
     if any(alias in netloc for alias in MIXDROP_ALIASES):
@@ -424,7 +435,7 @@ def detect_provider(url: str) -> str:
 
 
 def get_provider_type(provider: str) -> str:
-    if provider in ("streamwish", "luluvdoo", "bysejikuar", "hls_direct"):
+    if provider in ("voe", "streamwish", "luluvdoo", "bysejikuar", "hls_direct"):
         return "hls"
     return "mp4"
 
@@ -466,6 +477,39 @@ def _video_id(s: str) -> str:
 # ---------------------------------------------------------------------------
 # Individual Extractors
 # ---------------------------------------------------------------------------
+
+def extract_voe(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
+    """0. VOE.sx Extractor via https://voe-sx-movies-play.ytbro8326.workers.dev."""
+    clean = str(url_or_id).strip()
+    canonical_url = clean if "://" in clean else f"https://voe.sx/e/{clean}"
+    vid = _video_id(canonical_url)
+    
+    # Query the dedicated VOE worker API
+    worker_api = f"{VOE_WORKER_BASE.rstrip('/')}/api/{canonical_url}"
+    try:
+        r = requests.get(worker_api, timeout=(10, 20))
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("success"):
+                stream_url = data.get("proxied_stream_url") or data.get("stream_url")
+                raw_stream_url = data.get("stream_url") or stream_url
+                return {
+                    "status": "success",
+                    "provider": "voe",
+                    "type": "hls",
+                    "video_id": vid,
+                    "player_url": canonical_url,
+                    "title": data.get("title") or "VOE Stream",
+                    "raw_stream_url": raw_stream_url,
+                    "stream_url": stream_url,
+                    "proxy": proxy,
+                    "proxy_used": "voe-worker",
+                }
+    except Exception as e:
+        logger.warning(f"VOE worker extraction error: {e}")
+
+    raise RuntimeError(f"VOE extraction failed for {canonical_url}")
+
 
 def extract_dood(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
     """1. DoodStream / Playmogo Extractor."""
@@ -786,7 +830,9 @@ def extract_universal(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
     url = str(url_or_id).strip()
     provider = detect_provider(url)
 
-    if provider == "doodstream":
+    if provider == "voe":
+        res = extract_voe(url, proxy=proxy)
+    elif provider == "doodstream":
         res = extract_dood(url, proxy=proxy)
     elif provider == "mixdrop":
         res = extract_mixdrop(url, proxy=proxy)
@@ -813,8 +859,8 @@ def extract_universal(url_or_id: str, proxy: str = DEFAULT_PROXY) -> dict:
             "proxy_used": _mask_proxy(proxy),
         }
     else:
-        # Fallback strictly in requested priority: dood -> mixdrop -> luluvdo -> bysejikuar -> streamwish -> streamta
-        for fn in (extract_dood, extract_mixdrop, extract_luluvdoo, extract_bysejikuar, extract_streamwish, extract_streamta):
+        # Fallback strictly in requested priority: voe -> dood -> mixdrop -> luluvdo -> bysejikuar -> streamwish -> streamta
+        for fn in (extract_voe, extract_dood, extract_mixdrop, extract_luluvdoo, extract_bysejikuar, extract_streamwish, extract_streamta):
             try:
                 res = fn(url, proxy=proxy)
                 break
@@ -1101,6 +1147,7 @@ def root():
         "service": "universal-stream-api",
         "status": "online",
         "load_priority": [
+            "0. VOE.sx (voe-sx-movies-play worker)",
             "1. DoodStream (playmogo)",
             "2. MixDrop",
             "3. Luluvdoo (lulustream)",
@@ -1136,7 +1183,7 @@ def db_stats():
         "fetched_at": _db_fetched_at,
         "db_url": DB_URL,
         "proxy": _mask_proxy(DEFAULT_PROXY),
-        "priority": ["dood", "mixdrop", "luluvdoo", "bysejikuar", "streamwish", "streamtape"]
+        "priority": ["voe", "dood", "mixdrop", "luluvdoo", "bysejikuar", "streamwish", "streamtape"]
     })
 
 
@@ -1151,7 +1198,7 @@ def db_search():
 
 @app.route("/api/<int:tmdb_id>")
 def api_tmdb(tmdb_id: int):
-    """GET /api/<tmdb_id> - auto-plays in Luluvdoo style player."""
+    """GET /api/<tmdb_id> - auto-plays in Luluvdoo style player (VOE plays first if available)."""
     entry = lookup_by_tmdb(str(tmdb_id))
     if not entry:
         return jsonify({"error": f"TMDB ID '{tmdb_id}' not found in database"}), 404
@@ -1174,10 +1221,10 @@ def api_query_handler(query_id: str):
     cleaned = query_id.strip()
 
     # 1. Direct URL
-    if cleaned.startswith("http:/") or cleaned.startswith("https:/") or any(alias in cleaned for alias in (DOOD_ALIASES | MIXDROP_ALIASES | LULUVDOO_ALIASES | BYSE_ALIASES | STREAMWISH_ALIASES | STREAMTA_ALIASES)):
+    if cleaned.startswith("http:/") or cleaned.startswith("https:/") or any(alias in cleaned for alias in (VOE_ALIASES | DOOD_ALIASES | MIXDROP_ALIASES | LULUVDOO_ALIASES | BYSE_ALIASES | STREAMWISH_ALIASES | STREAMTA_ALIASES)):
         return api_direct(cleaned)
 
-    # 2. Database lookup (IMDb tt... or serial)
+    # 2. Database lookup (IMDb tt... or serial or TMDB)
     entry = lookup_any(cleaned)
     if entry:
         try:
