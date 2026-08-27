@@ -56,7 +56,7 @@ PROXIES_POOL = [
 
 DB_URL = os.getenv(
     "DB_URL",
-    "https://raw.githubusercontent.com/ytbro8326-sudo/primesrc_single_flaresolver/refs/heads/main/custom_merged_data.json?token=GHSAT0AAAAAAEC6VY7K65RBF6X7GCMHKWBY2UQAW3A"
+    "https://raw.githubusercontent.com/ytbro8326-sudo/primesrc_single_flaresolver/refs/heads/main/custom_merged_data.json"
 )
 GITHUB_TOKEN = (os.getenv("GITHUB_TOKEN") or "").strip()
 DB_REFRESH_SECS = int(os.getenv("DB_REFRESH_SECS", "3600"))
@@ -231,7 +231,7 @@ def _fetch_db() -> list:
     token = (os.getenv("GITHUB_TOKEN") or "").strip() or GITHUB_TOKEN
     urls_to_try = [
         DB_URL,
-        "https://raw.githubusercontent.com/ytbro8326-sudo/primesrc_single_flaresolver/refs/heads/main/custom_merged_data.json?token=GHSAT0AAAAAAEC6VY7K65RBF6X7GCMHKWBY2UQAW3A",
+        "https://raw.githubusercontent.com/ytbro8326-sudo/primesrc_single_flaresolver/refs/heads/main/custom_merged_data.json",
         "https://raw.githubusercontent.com/ytbro8326-sudo/primesrc_single_flaresolver/main/custom_merged_data.json",
         "https://api.github.com/repos/ytbro8326-sudo/primesrc_single_flaresolver/contents/custom_merged_data.json",
     ]
