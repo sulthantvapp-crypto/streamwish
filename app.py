@@ -299,6 +299,52 @@ def _fetch_db() -> list:
     return []
 
 
+_db: list = []
+_db_lock = threading.Lock()
+_db_fetched_at: float = 0.0
+_tmdb_index: dict = {}
+_imdb_index: dict = {}
+_serial_index: dict = {}
+_title_index: dict = {}
+stream_cache: dict = {}
+
+
+def _rebuild_db_indexes(entries: list):
+    """Build ultra-fast O(1) hash lookup maps for TMDB IDs, IMDb IDs, Serials, and Titles."""
+    global _tmdb_index, _imdb_index, _serial_index, _title_index
+    tmdb_idx = {}
+    imdb_idx = {}
+    serial_idx = {}
+    title_idx = {}
+
+    for entry in entries:
+        ti = str(entry.get("tmdb/imdb") or "").strip()
+        if ti:
+            parts = ti.split("/")
+            tmdb_part = parts[0].strip()
+            if tmdb_part:
+                tmdb_idx[tmdb_part] = entry
+            if len(parts) > 1 and parts[1].strip():
+                imdb_clean = parts[1].strip().lower()
+                imdb_idx[imdb_clean] = entry
+                if imdb_clean.startswith("tt"):
+                    imdb_idx[imdb_clean[2:]] = entry
+
+        s = entry.get("serial")
+        if s is not None:
+            serial_idx[str(s)] = entry
+
+        t = str(entry.get("title") or "").strip().lower()
+        if t:
+            title_idx[t] = entry
+
+    _tmdb_index = tmdb_idx
+    _imdb_index = imdb_idx
+    _serial_index = serial_idx
+    _title_index = title_idx
+    logger.info(f"Database indexed: {len(tmdb_idx)} TMDBs, {len(imdb_idx)} IMDbs in ultra-fast O(1) memory tables")
+
+
 def get_db() -> list:
     global _db, _db_fetched_at
     now = time.time()
@@ -306,56 +352,60 @@ def get_db() -> list:
         if not _db or (now - _db_fetched_at) > DB_REFRESH_SECS:
             _db = _fetch_db()
             _db_fetched_at = now
+            if _db:
+                _rebuild_db_indexes(_db)
         return _db
 
 
 def lookup_by_tmdb(tmdb_id: str) -> Optional[dict]:
+    """Ultra-fast O(1) TMDB hash lookup."""
     target = str(tmdb_id).strip()
-    for entry in get_db():
-        ti = str(entry.get("tmdb/imdb") or "").strip()
-        parts = ti.split("/")
-        if parts[0].strip() == target:
-            return entry
-    return None
+    if not target:
+        return None
+    get_db()
+    return _tmdb_index.get(target)
 
 
 def lookup_by_imdb(imdb_id: str) -> Optional[dict]:
+    """Ultra-fast O(1) IMDb hash lookup."""
     target = imdb_id.strip().lower()
-    if not target.startswith("tt"):
-        target = "tt" + target
-    for entry in get_db():
-        ti = str(entry.get("tmdb/imdb") or "").strip()
-        parts = ti.split("/")
-        if len(parts) > 1 and parts[1].strip().lower() == target:
-            return entry
-    return None
+    if not target:
+        return None
+    get_db()
+    if target.startswith("tt"):
+        return _imdb_index.get(target) or _imdb_index.get(target[2:])
+    return _imdb_index.get(target) or _imdb_index.get("tt" + target)
 
 
 def lookup_any(query_id: str) -> Optional[dict]:
+    """Instant O(1) multi-key lookup across TMDB, IMDb, Serial, or Title."""
     q = str(query_id).strip()
     if not q:
         return None
 
-    entry = lookup_by_tmdb(q)
+    get_db()
+
+    # 1. Check TMDB exact match
+    entry = _tmdb_index.get(q)
     if entry:
         return entry
 
-    if q.lower().startswith("tt") or (q.isdigit() and len(q) >= 7):
-        entry = lookup_by_imdb(q)
-        if entry:
-            return entry
-
-    if q.isdigit():
-        q_int = int(q)
-        for e in get_db():
-            if e.get("serial") == q_int:
-                return e
-
+    # 2. Check IMDb match
     q_low = q.lower()
-    for e in get_db():
-        t = str(e.get("title") or "").lower()
-        if q_low == t:
-            return e
+    if q_low in _imdb_index:
+        return _imdb_index[q_low]
+    if q_low.startswith("tt") and q_low[2:] in _imdb_index:
+        return _imdb_index[q_low[2:]]
+    if ("tt" + q_low) in _imdb_index:
+        return _imdb_index["tt" + q_low]
+
+    # 3. Check Serial number
+    if q in _serial_index:
+        return _serial_index[q]
+
+    # 4. Check Title exact match
+    if q_low in _title_index:
+        return _title_index[q_low]
 
     return None
 
@@ -1499,8 +1549,11 @@ def hls_segment_proxy():
 
 
 # ---------------------------------------------------------------------------
-# Server Entrypoint
+# Server Entrypoint & Background Warmup
 # ---------------------------------------------------------------------------
+
+# Preload DB and build memory hash indexes immediately in background upon server launch
+threading.Thread(target=get_db, daemon=True).start()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
